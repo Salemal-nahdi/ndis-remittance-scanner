@@ -4,7 +4,9 @@ Helps NDIS providers using Xero:
 - **Overdue payments**: ages unpaid invoices from their due date and emails the
   nominated addresses when a client goes past the threshold (30 days by default,
   adjustable per client). Staff record what they decided: follow up, put services
-  on hold, snooze or dismiss.
+  on hold, snooze or dismiss. Each participant can be marked as paid by the
+  NDIA, a named plan manager or self-managed, and the "Who pays" view totals
+  overdue amounts per payer.
 - **Contact clean-up**: finds Xero contacts that are probably the same client,
   and clients with no NDIS number recorded.
 - **Remittance scanning**: in discovery, see `docs/roadmap.md`.

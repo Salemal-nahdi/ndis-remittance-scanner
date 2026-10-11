@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import type { DecisionAction } from "@/lib/alerts";
 import { runAlertCheck } from "@/lib/run-alerts";
-import { addDecision, addNotDuplicate, saveSettings as saveSettingsRow, setThresholdOverride } from "@/lib/store";
+import type { Payer } from "@/lib/payers";
+import { addDecision, addNotDuplicate, saveSettings as saveSettingsRow, setPayer, setThresholdOverride } from "@/lib/store";
 import { syncFromXero } from "@/lib/sync";
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -22,6 +23,13 @@ export async function saveSettings(input: { defaultThresholdDays: number; alertE
 export async function setContactThreshold(contactId: string, days: number | null) {
   await setThresholdOverride(contactId, days === null ? null : Math.max(1, Math.min(365, Math.round(days))));
   revalidatePath("/receivables");
+}
+
+export async function setParticipantPayer(contactId: string, payer: Payer | null) {
+  if (payer?.type === "plan_managed" && !payer.planManager?.trim()) return { error: "Enter the plan manager's name" };
+  await setPayer(contactId, payer);
+  revalidatePath("/receivables");
+  return { ok: true };
 }
 
 export async function recordDecision(input: {

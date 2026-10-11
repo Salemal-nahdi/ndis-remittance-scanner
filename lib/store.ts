@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import type { AlertState, Decision, DecisionAction } from "./alerts";
 import type { UnpaidInvoice } from "./aging";
 import type { ContactRecord } from "./duplicates";
+import type { Payer, PayerType } from "./payers";
 import postgres from "postgres";
 import { sql } from "./db";
 
@@ -163,6 +164,25 @@ export async function getLastAlertRun(): Promise<AlertRun | null> {
   const [row] = await sql<{ at: Date; date: string; sent: number; error: string | null }[]>`
     select ran_at as "at", run_date::text as "date", sent, error from alert_runs order by ran_at desc limit 1`;
   return row ? { at: row.at.toISOString(), date: row.date, sent: row.sent, error: row.error ?? undefined } : null;
+}
+
+// Who pays each participant
+
+export async function getPayers(): Promise<Record<string, Payer>> {
+  const rows = await sql<{ contactId: string; type: PayerType; planManager: string | null }[]>`
+    select contact_id as "contactId", payer_type as "type", plan_manager as "planManager" from participant_payers`;
+  return Object.fromEntries(rows.map((r) => [r.contactId, { type: r.type, planManager: r.planManager ?? undefined }]));
+}
+
+export async function setPayer(contactId: string, payer: Payer | null): Promise<void> {
+  if (!payer) {
+    await sql`delete from participant_payers where contact_id = ${contactId}`;
+    return;
+  }
+  const planManager = payer.type === "plan_managed" ? payer.planManager?.trim() || null : null;
+  await sql`
+    insert into participant_payers (contact_id, payer_type, plan_manager) values (${contactId}, ${payer.type}, ${planManager})
+    on conflict (contact_id) do update set payer_type = excluded.payer_type, plan_manager = excluded.plan_manager, updated_at = now()`;
 }
 
 // Contact clean-up

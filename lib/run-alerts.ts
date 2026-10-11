@@ -4,7 +4,7 @@ import { alertStatus, nextAlertState, pendingAlerts } from "./alerts";
 import { todayISO } from "./dates";
 import { alertEmail, sendEmail } from "./email";
 import { LOCKS, sql } from "./db";
-import { getAlertState, getDecisions, getSettings, recordAlertRun, replaceAlertState } from "./store";
+import { getAlertState, getDecisions, getPayers, getSettings, recordAlertRun, replaceAlertState } from "./store";
 import { syncFromXero } from "./sync";
 
 /**
@@ -31,7 +31,7 @@ export async function runAlertCheck(): Promise<{ sent: number; error?: string; s
           const s = alertStatus(r, decisions[r.contactId]?.at(-1), today);
           return s !== "clear" && s !== "snooze" && s !== "dismiss";
         }).length;
-        const { subject, html } = alertEmail(pending, open);
+        const { subject, html } = alertEmail(pending, open, await getPayers());
         await sendEmail(settings.alertEmails, subject, html);
       }
 

@@ -17,7 +17,7 @@ describe.skipIf(!url)("store (Postgres)", async () => {
     execFileSync("node", ["scripts/migrate.mjs"], { env: { ...process.env, DATABASE_URL: url } });
   });
   beforeEach(async () => {
-    await sql`truncate xero_connection, xero_snapshot, threshold_overrides, decisions, alert_state, alert_runs, not_duplicates`;
+    await sql`truncate xero_connection, xero_snapshot, threshold_overrides, decisions, alert_state, alert_runs, not_duplicates, participant_payers`;
     await sql`update settings set default_threshold_days = 30, alert_emails = '{}'`;
   });
   afterAll(() => sql.end());
@@ -58,6 +58,17 @@ describe.skipIf(!url)("store (Postgres)", async () => {
     const conn = await store.getXeroConnection();
     expect(conn?.tenantName).toBe("Other");
     expect(store.unseal(conn!.tokenSet)).toEqual({});
+  });
+
+  it("saves who pays each participant", async () => {
+    await store.setPayer("c1", { type: "plan_managed", planManager: " Example Plan Partners " });
+    await store.setPayer("c2", { type: "ndia", planManager: "ignored" });
+    await store.setPayer("c3", { type: "self_managed" });
+    await store.setPayer("c3", null);
+    expect(await store.getPayers()).toEqual({
+      c1: { type: "plan_managed", planManager: "Example Plan Partners" },
+      c2: { type: "ndia", planManager: undefined },
+    });
   });
 
   it("remembers groups marked as different clients", async () => {

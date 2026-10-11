@@ -62,3 +62,12 @@ create table if not exists not_duplicates (
   cluster_key text primary key,
   marked_at timestamptz not null default now()
 );
+
+-- Who pays each participant's invoices. Set by staff for now; remittance
+-- scanning will fill it in from who actually pays.
+create table if not exists participant_payers (
+  contact_id text primary key,
+  payer_type text not null check (payer_type in ('ndia', 'plan_managed', 'self_managed')),
+  plan_manager text,
+  updated_at timestamptz not null default now()
+);

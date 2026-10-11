@@ -51,9 +51,11 @@ The app never pauses services or contacts anyone by itself.
 - Unpaid sales invoices from Xero, refreshed whenever reconciliation records a
   payment, so the list is always current.
 - Standard aging buckets: current, 1-30, 31-60, 61-90 and 90+ days.
-- Grouped by Xero contact. Still to do: group by who pays (the NDIA, each plan
-  manager or self-managed), once we know whether contacts are participants or
-  plan managers.
+- Xero contacts are the participants. Who pays each participant (the NDIA, a
+  named plan manager, or self-managed) is set in the app, shown as a column, and
+  totalled in a "Who pays" view to spot a plan manager who is behind across
+  several participants. Remittance scanning should fill it in automatically
+  from who actually pays.
 
 **Alerts and decisions**
 - When a client crosses their threshold, they appear on the alerts list and
