@@ -11,7 +11,7 @@ Read remittance advices from the NDIA and plan managers, match each line to an
 outstanding Xero invoice, and record the payments in Xero after approval.
 Design depends on the email analysis in `docs/remittance-analysis.md`.
 
-## 2. Contact clean-up
+## 2. Contact clean-up (built)
 Find Xero contacts that are probably the same client and suggest tidying them up.
 Duplicates also break remittance matching, so this feeds feature 1.
 
@@ -37,24 +37,23 @@ Duplicates also break remittance matching, so this feeds feature 1.
   endpoint, so merging happens in Xero's own screen), or mark the cluster
   "not duplicates" so it is not flagged again.
 
-## 3. Aged receivables alerts
+## 3. Aged receivables alerts (built)
 Warn the user when a client's invoices stay unpaid past a threshold they set,
 so they can decide what to do, including whether to pause services.
 The app never pauses services or contacts anyone by itself.
 
-**Settings**
-- Default threshold in days, for example 30 days overdue, plus an optional
-  override per client or per plan manager.
-- Days counted from the invoice due date by default (from invoice date as an option).
-- Who receives alerts and how.
+**Settings** (decided)
+- Days counted from the invoice due date. Default threshold 30 days, with an
+  optional override per client.
+- Alerts go by email to addresses the business nominates, so they can act on them.
 
 **Data**
 - Unpaid sales invoices from Xero, refreshed whenever reconciliation records a
   payment, so the list is always current.
 - Standard aging buckets: current, 1-30, 31-60, 61-90 and 90+ days.
-- Group by client and also by who pays: the NDIA, each plan manager or
-  self-managed. An overdue balance often points to a plan manager problem
-  rather than the participant.
+- Grouped by Xero contact. Still to do: group by who pays (the NDIA, each plan
+  manager or self-managed), once we know whether contacts are participants or
+  plan managers.
 
 **Alerts and decisions**
 - When a client crosses their threshold, they appear on the alerts list and

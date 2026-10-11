@@ -8,3 +8,6 @@ next-env.d.ts
 # Real remittance emails and anything derived from them. Contains participant
 # personal information (names, NDIS numbers, payment details) - never commit.
 private-data/
+
+# App state: Xero tokens, settings and a copy of Xero data
+data/

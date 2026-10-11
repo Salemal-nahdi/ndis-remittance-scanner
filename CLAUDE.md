@@ -12,5 +12,13 @@ records the payments in Xero once a person approves them.
   `docs/` written in general terms, never with real personal details.
 
 ## Status
-Discovery phase: analysing a sample of ~400 real remittance emails in
-`private-data/emails/` to decide what to extract, how to match it, and what to automate.
+- Built: overdue payment alerts and contact clean-up (see `README.md`).
+- Discovery: analysing ~400 real remittance emails in `private-data/emails/` to
+  design remittance scanning (`docs/roadmap.md`).
+
+## Code layout
+- `lib/` holds the logic. `aging.ts`, `alerts.ts` and `duplicates.ts` are pure and tested in `tests/`.
+- `lib/sync.ts` keeps a local copy of Xero data; pages read it rather than calling Xero.
+- Every table sorts by clicking its headings via `components/useSort.tsx`; use it for new tables.
+- Money is handled in integer cents (`lib/money.ts`).
+- Run `npm test`, `npm run typecheck` and `npm run build` before pushing.
