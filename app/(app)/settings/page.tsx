@@ -1,8 +1,8 @@
 import { SettingsForm } from "@/components/SettingsForm";
-import { readStore } from "@/lib/store";
+import { getLastAlertRun, getSettings, getXeroConnection } from "@/lib/store";
 
 export default async function SettingsPage() {
-  const { settings, lastAlertRun, xero } = await readStore();
+  const [settings, lastAlertRun, xero] = await Promise.all([getSettings(), getLastAlertRun(), getXeroConnection()]);
   return (
     <>
       <h1>Settings</h1>
@@ -10,7 +10,7 @@ export default async function SettingsPage() {
       <SettingsForm
         defaultThresholdDays={settings.defaultThresholdDays}
         alertEmails={settings.alertEmails}
-        lastRun={lastAlertRun}
+        lastRun={lastAlertRun ?? undefined}
         connected={!!xero}
         alertHour={Number(process.env.ALERT_HOUR ?? 8)}
       />

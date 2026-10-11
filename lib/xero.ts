@@ -3,7 +3,8 @@ import { XeroClient } from "xero-node";
 import type { TokenSet } from "xero-node";
 import { toCents } from "./money";
 import { parseXeroDate } from "./dates";
-import { readStore, seal, unseal, updateStore } from "./store";
+import { LOCKS, sql } from "./db";
+import { getXeroConnection, saveXeroTokens, seal, unseal } from "./store";
 import type { UnpaidInvoice } from "./aging";
 import type { ContactRecord } from "./duplicates";
 
@@ -26,17 +27,24 @@ export function xeroClient(): XeroClient {
 
 /** A client with a valid access token for the connected organisation. */
 async function connectedClient(): Promise<{ xero: XeroClient; tenantId: string }> {
-  const { xero: saved } = await readStore();
+  const saved = await getXeroConnection();
   if (!saved) throw new Error("Xero is not connected");
   const xero = xeroClient();
   await xero.initialize();
   xero.setTokenSet(unseal<TokenSet>(saved.tokenSet));
-  if (xero.readTokenSet().expired()) {
-    const refreshed = await xero.refreshToken();
-    await updateStore((d) => {
-      if (d.xero) d.xero.tokenSet = seal(refreshed);
-    });
-  }
+  if (!xero.readTokenSet().expired()) return { xero, tenantId: saved.tenantId };
+
+  // Xero refresh tokens work once, so only one request may refresh at a time.
+  // Others wait for the lock, then use the token it saved.
+  await sql.begin(async (tx) => {
+    await tx`select pg_advisory_xact_lock(${LOCKS.xeroTokens})`;
+    const latest = await getXeroConnection(tx);
+    if (!latest) throw new Error("Xero is not connected");
+    xero.setTokenSet(unseal<TokenSet>(latest.tokenSet));
+    if (xero.readTokenSet().expired()) {
+      await saveXeroTokens(seal(await xero.refreshToken()), tx);
+    }
+  });
   return { xero, tenantId: saved.tenantId };
 }
 

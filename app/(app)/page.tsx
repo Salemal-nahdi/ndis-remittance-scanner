@@ -6,7 +6,7 @@ import { alertStatus } from "@/lib/alerts";
 import { todayISO } from "@/lib/dates";
 import { findDuplicateClusters } from "@/lib/duplicates";
 import { formatCents } from "@/lib/money";
-import { readStore } from "@/lib/store";
+import { getDecisions, getNotDuplicates, getSettings } from "@/lib/store";
 import { getSnapshot } from "@/lib/sync";
 
 export default async function Overview() {
@@ -20,7 +20,7 @@ export default async function Overview() {
       </>
     );
   }
-  const { settings, decisions, notDuplicates } = await readStore();
+  const [settings, decisions, notDuplicates] = await Promise.all([getSettings(), getDecisions(), getNotDuplicates()]);
   const today = todayISO();
   const rows = ageReceivables(snapshot.invoices, today, settings);
   const needsDecision = rows.filter((r) => alertStatus(r, decisions[r.contactId]?.at(-1), today) === "overdue");

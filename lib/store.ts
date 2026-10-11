@@ -1,16 +1,13 @@
 import "server-only";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
-import type { AlertState, Decision } from "./alerts";
+import type { AlertState, Decision, DecisionAction } from "./alerts";
 import type { UnpaidInvoice } from "./aging";
 import type { ContactRecord } from "./duplicates";
+import postgres from "postgres";
+import { sql } from "./db";
 
-/**
- * App state kept in a JSON file. Fine for one business on a server with a
- * persistent disk; swap for a database before hosting on serverless or for
- * several businesses.
- */
+/** App state in Postgres. Tables are defined in db/schema.sql. */
+
 export interface Settings {
   defaultThresholdDays: number;
   overrides: Record<string, number>;
@@ -25,50 +22,161 @@ export interface XeroSnapshot {
   invoiceCounts: Record<string, number>;
 }
 
-export interface StoreData {
-  xero?: { tokenSet: string; tenantId: string; tenantName: string };
-  snapshot?: XeroSnapshot;
-  settings: Settings;
-  decisions: Record<string, Decision[]>;
-  alertState: Record<string, AlertState>;
-  lastAlertRun?: { at: string; date: string; sent: number; error?: string };
-  notDuplicates: string[];
+export interface XeroConnection {
+  /** Encrypted with seal() */
+  tokenSet: string;
+  tenantId: string;
+  tenantName: string;
 }
 
-const DATA_FILE = path.join(process.env.DATA_DIR ?? path.join(process.cwd(), "data"), "store.json");
+export interface AlertRun {
+  at: string;
+  date: string;
+  sent: number;
+  error?: string;
+}
 
-const DEFAULTS: StoreData = {
-  settings: { defaultThresholdDays: 30, overrides: {}, alertEmails: [] },
-  decisions: {},
-  alertState: {},
-  notDuplicates: [],
-};
+/** The pool, or a transaction from sql.begin(). */
+type Tx = postgres.Sql | postgres.TransactionSql;
 
-export async function readStore(): Promise<StoreData> {
-  try {
-    return { ...DEFAULTS, ...JSON.parse(await readFile(DATA_FILE, "utf8")) };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(DEFAULTS);
-    throw err;
+// Xero connection
+
+export async function getXeroConnection(db: Tx = sql): Promise<XeroConnection | null> {
+  const [row] = await db<XeroConnection[]>`
+    select token_set as "tokenSet", tenant_id as "tenantId", tenant_name as "tenantName"
+    from xero_connection where id = 1`;
+  return row ?? null;
+}
+
+/** Saves a new connection and drops the copy of the previous organisation's data. */
+export async function saveXeroConnection(c: XeroConnection): Promise<void> {
+  await sql.begin(async (tx) => {
+    await tx`
+      insert into xero_connection (id, token_set, tenant_id, tenant_name)
+      values (1, ${c.tokenSet}, ${c.tenantId}, ${c.tenantName})
+      on conflict (id) do update set token_set = excluded.token_set, tenant_id = excluded.tenant_id,
+        tenant_name = excluded.tenant_name, updated_at = now()`;
+    await tx`delete from xero_snapshot`;
+  });
+}
+
+export async function saveXeroTokens(tokenSet: string, db: Tx = sql): Promise<void> {
+  await db`update xero_connection set token_set = ${tokenSet}, updated_at = now() where id = 1`;
+}
+
+// Copy of Xero data
+
+export async function getStoredSnapshot(): Promise<XeroSnapshot | null> {
+  const [row] = await sql<{ syncedAt: Date; data: Omit<XeroSnapshot, "syncedAt"> }[]>`
+    select synced_at as "syncedAt", data from xero_snapshot where id = 1`;
+  return row ? { ...row.data, syncedAt: row.syncedAt.toISOString() } : null;
+}
+
+export async function saveSnapshot(s: XeroSnapshot): Promise<void> {
+  const { syncedAt, ...data } = s;
+  await sql`
+    insert into xero_snapshot (id, synced_at, data) values (1, ${syncedAt}, ${sql.json(data as never)})
+    on conflict (id) do update set synced_at = excluded.synced_at, data = excluded.data`;
+}
+
+// Settings
+
+export async function getSettings(): Promise<Settings> {
+  const [[row], overrides] = await Promise.all([
+    sql<{ defaultThresholdDays: number; alertEmails: string[] }[]>`
+      select default_threshold_days as "defaultThresholdDays", alert_emails as "alertEmails" from settings where id = 1`,
+    sql<{ contactId: string; days: number }[]>`select contact_id as "contactId", days from threshold_overrides`,
+  ]);
+  return {
+    defaultThresholdDays: row?.defaultThresholdDays ?? 30,
+    alertEmails: row?.alertEmails ?? [],
+    overrides: Object.fromEntries(overrides.map((o) => [o.contactId, o.days])),
+  };
+}
+
+export async function saveSettings(defaultThresholdDays: number, alertEmails: string[]): Promise<void> {
+  await sql`
+    insert into settings (id, default_threshold_days, alert_emails) values (1, ${defaultThresholdDays}, ${alertEmails})
+    on conflict (id) do update set default_threshold_days = excluded.default_threshold_days, alert_emails = excluded.alert_emails`;
+}
+
+export async function setThresholdOverride(contactId: string, days: number | null): Promise<void> {
+  if (days === null) {
+    await sql`delete from threshold_overrides where contact_id = ${contactId}`;
+  } else {
+    await sql`
+      insert into threshold_overrides (contact_id, days) values (${contactId}, ${days})
+      on conflict (contact_id) do update set days = excluded.days`;
   }
 }
 
-let queue: Promise<unknown> = Promise.resolve();
+// Decisions
 
-/** Read-modify-write, serialised so concurrent requests don't overwrite each other. */
-export function updateStore<T>(fn: (data: StoreData) => T | Promise<T>): Promise<T> {
-  const run = queue.then(async () => {
-    const data = await readStore();
-    const result = await fn(data);
-    await mkdir(path.dirname(DATA_FILE), { recursive: true });
-    const tmp = `${DATA_FILE}.tmp`;
-    await writeFile(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
-    await rename(tmp, DATA_FILE);
-    return result;
-  });
-  queue = run.catch(() => undefined);
-  return run;
+/** Every contact's decisions, oldest first. */
+export async function getDecisions(): Promise<Record<string, Decision[]>> {
+  const rows = await sql<(Decision & { contactId: string; at: Date; snoozeUntil: string | null })[]>`
+    select contact_id as "contactId", action, note, decided_by as "by", decided_at as "at",
+      snooze_until::text as "snoozeUntil", invoice_ids as "invoiceIds"
+    from decisions order by decided_at, id`;
+  const out: Record<string, Decision[]> = {};
+  for (const { contactId, at, snoozeUntil, ...d } of rows) {
+    (out[contactId] ??= []).push({ ...d, at: at.toISOString(), snoozeUntil: snoozeUntil ?? undefined });
+  }
+  return out;
 }
+
+export async function addDecision(
+  contactId: string,
+  d: { action: DecisionAction; note: string; by: string; snoozeUntil?: string; invoiceIds: string[] },
+): Promise<void> {
+  await sql`
+    insert into decisions (contact_id, action, note, decided_by, snooze_until, invoice_ids)
+    values (${contactId}, ${d.action}, ${d.note}, ${d.by}, ${d.snoozeUntil ?? null}, ${d.invoiceIds})`;
+}
+
+// Alerts
+
+export async function getAlertState(db: Tx = sql): Promise<Record<string, AlertState>> {
+  const rows = await db<{ contactId: string; notifiedInvoiceIds: string[]; lastNotifiedAt: Date | null }[]>`
+    select contact_id as "contactId", notified_invoice_ids as "notifiedInvoiceIds", last_notified_at as "lastNotifiedAt"
+    from alert_state`;
+  return Object.fromEntries(
+    rows.map((r) => [r.contactId, { notifiedInvoiceIds: r.notifiedInvoiceIds, lastNotifiedAt: r.lastNotifiedAt?.toISOString() }]),
+  );
+}
+
+export async function replaceAlertState(state: Record<string, AlertState>, db: Tx = sql): Promise<void> {
+  await db`delete from alert_state`;
+  const rows = Object.entries(state).map(([contactId, s]) => ({
+    contact_id: contactId,
+    notified_invoice_ids: s.notifiedInvoiceIds,
+    last_notified_at: s.lastNotifiedAt ?? null,
+  }));
+  if (rows.length) await db`insert into alert_state ${db(rows)}`;
+}
+
+export async function recordAlertRun(run: AlertRun, db: Tx = sql): Promise<void> {
+  await db`insert into alert_runs (ran_at, run_date, sent, error) values (${run.at}, ${run.date}, ${run.sent}, ${run.error ?? null})`;
+}
+
+export async function getLastAlertRun(): Promise<AlertRun | null> {
+  const [row] = await sql<{ at: Date; date: string; sent: number; error: string | null }[]>`
+    select ran_at as "at", run_date::text as "date", sent, error from alert_runs order by ran_at desc limit 1`;
+  return row ? { at: row.at.toISOString(), date: row.date, sent: row.sent, error: row.error ?? undefined } : null;
+}
+
+// Contact clean-up
+
+export async function getNotDuplicates(): Promise<string[]> {
+  const rows = await sql<{ clusterKey: string }[]>`select cluster_key as "clusterKey" from not_duplicates`;
+  return rows.map((r) => r.clusterKey);
+}
+
+export async function addNotDuplicate(clusterKey: string): Promise<void> {
+  await sql`insert into not_duplicates (cluster_key) values (${clusterKey}) on conflict do nothing`;
+}
+
+// Encryption for Xero tokens at rest
 
 function key(): Buffer {
   const secret = process.env.SESSION_SECRET;
@@ -76,7 +184,6 @@ function key(): Buffer {
   return createHash("sha256").update(secret).digest();
 }
 
-/** Encrypts Xero tokens at rest. */
 export function seal(value: unknown): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key(), iv);

@@ -2,13 +2,13 @@ import { ContactCleanup, type ClusterRow, type ContactRow } from "@/components/C
 import { NotConnected } from "@/components/NotConnected";
 import { RefreshButton } from "@/components/RefreshButton";
 import { findDuplicateClusters, findNdisNumber, looksLikeOrganisation } from "@/lib/duplicates";
-import { readStore } from "@/lib/store";
+import { getNotDuplicates } from "@/lib/store";
 import { getSnapshot } from "@/lib/sync";
 
 export default async function ContactsPage() {
   const snapshot = await getSnapshot();
   if (!snapshot) return <NotConnected />;
-  const { notDuplicates } = await readStore();
+  const notDuplicates = await getNotDuplicates();
 
   const unpaid: Record<string, number> = {};
   for (const inv of snapshot.invoices) unpaid[inv.contactId] = (unpaid[inv.contactId] ?? 0) + inv.amountDueCents;

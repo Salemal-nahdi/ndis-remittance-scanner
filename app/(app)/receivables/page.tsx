@@ -5,13 +5,13 @@ import { ageReceivables } from "@/lib/aging";
 import { alertStatus } from "@/lib/alerts";
 import { todayISO } from "@/lib/dates";
 import { formatCents } from "@/lib/money";
-import { readStore } from "@/lib/store";
+import { getDecisions, getSettings } from "@/lib/store";
 import { getSnapshot } from "@/lib/sync";
 
 export default async function ReceivablesPage() {
   const snapshot = await getSnapshot();
   if (!snapshot) return <NotConnected />;
-  const { settings, decisions } = await readStore();
+  const [settings, decisions] = await Promise.all([getSettings(), getDecisions()]);
   const today = todayISO();
 
   const rows: ReceivableRow[] = ageReceivables(snapshot.invoices, today, settings).map((r) => ({

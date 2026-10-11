@@ -9,5 +9,3 @@ next-env.d.ts
 # personal information (names, NDIS numbers, payment details) - never commit.
 private-data/
 
-# App state: Xero tokens, settings and a copy of Xero data
-data/

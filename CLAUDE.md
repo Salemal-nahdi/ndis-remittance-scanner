@@ -18,7 +18,10 @@ records the payments in Xero once a person approves them.
 
 ## Code layout
 - `lib/` holds the logic. `aging.ts`, `alerts.ts` and `duplicates.ts` are pure and tested in `tests/`.
-- `lib/sync.ts` keeps a local copy of Xero data; pages read it rather than calling Xero.
+- State is in Postgres: schema in `db/schema.sql` (idempotent, applied by `npm run db:migrate`),
+  queries in `lib/store.ts`. Change the schema by adding idempotent statements there.
+- `lib/sync.ts` keeps a copy of Xero data in the database; pages read it rather than calling Xero.
 - Every table sorts by clicking its headings via `components/useSort.tsx`; use it for new tables.
 - Money is handled in integer cents (`lib/money.ts`).
-- Run `npm test`, `npm run typecheck` and `npm run build` before pushing.
+- Run `npm test` (with `TEST_DATABASE_URL` set to a throwaway database), `npm run typecheck`
+  and `npm run build` before pushing.

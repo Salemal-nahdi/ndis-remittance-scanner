@@ -1,9 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { Decision, DecisionAction } from "@/lib/alerts";
+import type { DecisionAction } from "@/lib/alerts";
 import { runAlertCheck } from "@/lib/run-alerts";
-import { updateStore } from "@/lib/store";
+import { addDecision, addNotDuplicate, saveSettings as saveSettingsRow, setThresholdOverride } from "@/lib/store";
 import { syncFromXero } from "@/lib/sync";
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -14,19 +14,13 @@ export async function saveSettings(input: { defaultThresholdDays: number; alertE
   const emails = input.alertEmails.map((e) => e.trim()).filter(Boolean);
   const bad = emails.find((e) => !EMAIL.test(e));
   if (bad) return { error: `"${bad}" isn't a valid email address` };
-  await updateStore((d) => {
-    d.settings.defaultThresholdDays = days;
-    d.settings.alertEmails = emails;
-  });
+  await saveSettingsRow(days, emails);
   revalidatePath("/", "layout");
   return { ok: true };
 }
 
 export async function setContactThreshold(contactId: string, days: number | null) {
-  await updateStore((d) => {
-    if (days === null) delete d.settings.overrides[contactId];
-    else d.settings.overrides[contactId] = Math.max(1, Math.min(365, Math.round(days)));
-  });
+  await setThresholdOverride(contactId, days === null ? null : Math.max(1, Math.min(365, Math.round(days))));
   revalidatePath("/receivables");
 }
 
@@ -40,25 +34,19 @@ export async function recordDecision(input: {
 }) {
   if (!input.by.trim()) return { error: "Enter your name so the team can see who decided" };
   if (input.action === "snooze" && !input.snoozeUntil) return { error: "Pick a date to snooze until" };
-  const decision: Decision = {
+  await addDecision(input.contactId, {
     action: input.action,
     note: input.note.trim(),
     by: input.by.trim(),
-    at: new Date().toISOString(),
     snoozeUntil: input.action === "snooze" ? input.snoozeUntil : undefined,
     invoiceIds: input.invoiceIds,
-  };
-  await updateStore((d) => {
-    (d.decisions[input.contactId] ??= []).push(decision);
   });
   revalidatePath("/receivables");
   return { ok: true };
 }
 
 export async function markNotDuplicates(clusterKey: string) {
-  await updateStore((d) => {
-    if (!d.notDuplicates.includes(clusterKey)) d.notDuplicates.push(clusterKey);
-  });
+  await addNotDuplicate(clusterKey);
   revalidatePath("/contacts");
 }
 
