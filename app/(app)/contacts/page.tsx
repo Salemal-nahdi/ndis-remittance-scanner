@@ -1,20 +1,21 @@
 import { ContactCleanup, type ClusterRow, type ContactRow } from "@/components/ContactCleanup";
 import { NotConnected } from "@/components/NotConnected";
 import { RefreshButton } from "@/components/RefreshButton";
-import { findDuplicateClusters, findNdisNumber, looksLikeOrganisation } from "@/lib/duplicates";
-import { getNotDuplicates } from "@/lib/store";
-import { getSnapshot } from "@/lib/sync";
+import { findNdisNumber, looksLikeOrganisation } from "@/lib/duplicates";
+import { getCleanupData, getNotDuplicates } from "@/lib/store";
+import { ensureXeroData } from "@/lib/sync";
 
 export default async function ContactsPage() {
-  const snapshot = await getSnapshot();
+  if (!(await ensureXeroData())) return <NotConnected />;
+  const [snapshot, notDuplicates] = await Promise.all([getCleanupData(), getNotDuplicates()]);
   if (!snapshot) return <NotConnected />;
-  const notDuplicates = await getNotDuplicates();
+  const contactsById = new Map(snapshot.contacts.map((c) => [c.contactId, c]));
 
   const unpaid: Record<string, number> = {};
-  for (const inv of snapshot.invoices) unpaid[inv.contactId] = (unpaid[inv.contactId] ?? 0) + inv.amountDueCents;
+  for (const inv of snapshot.unpaidInvoices) unpaid[inv.contactId] = (unpaid[inv.contactId] ?? 0) + inv.amountDueCents;
 
   const contactRow = (id: string): ContactRow => {
-    const c = snapshot.contacts.find((x) => x.contactId === id)!;
+    const c = contactsById.get(id)!;
     return {
       contactId: c.contactId,
       name: c.name,
@@ -27,9 +28,9 @@ export default async function ContactsPage() {
   };
 
   const active = snapshot.contacts.filter((c) => !c.archived);
-  const clusters: ClusterRow[] = findDuplicateClusters(snapshot.contacts)
+  const clusters: ClusterRow[] = snapshot.duplicateClusters
     .filter((cl) => !notDuplicates.includes(cl.key))
-    .filter((cl) => cl.contactIds.some((id) => !snapshot.contacts.find((c) => c.contactId === id)?.archived))
+    .filter((cl) => cl.contactIds.every((id) => contactsById.has(id)) && cl.contactIds.some((id) => !contactsById.get(id)?.archived))
     .map((cl) => ({ ...cl, members: cl.contactIds.map(contactRow) }));
 
   // Contacts that look like people but have no valid NDIS number recorded.

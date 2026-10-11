@@ -4,7 +4,7 @@ import { alertStatus, nextAlertState, pendingAlerts } from "./alerts";
 import { todayISO } from "./dates";
 import { alertEmail, sendEmail } from "./email";
 import { LOCKS, sql } from "./db";
-import { getAlertState, getDecisions, getPayers, getSettings, recordAlertRun, replaceAlertState } from "./store";
+import { getAlertState, getDecisions, getPayers, getSettings, getUnpaidInvoices, recordAlertRun, replaceAlertState } from "./store";
 import { syncFromXero } from "./sync";
 
 /**
@@ -20,9 +20,10 @@ export async function runAlertCheck(): Promise<{ sent: number; error?: string; s
       const [{ locked }] = await tx<{ locked: boolean }[]>`select pg_try_advisory_xact_lock(${LOCKS.alertRun}) as locked`;
       if (!locked) return { sent: 0, skipped: true };
 
-      const snapshot = await syncFromXero();
+      await syncFromXero();
+      const unpaid = (await getUnpaidInvoices())?.unpaidInvoices ?? [];
       const [settings, decisions, alertState] = await Promise.all([getSettings(), getDecisions(), getAlertState(tx)]);
-      const rows = ageReceivables(snapshot.invoices, today, settings);
+      const rows = ageReceivables(unpaid, today, settings);
       const pending = pendingAlerts(rows, decisions, alertState, today);
 
       if (pending.length > 0) {

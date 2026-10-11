@@ -4,14 +4,13 @@ import { RefreshButton } from "@/components/RefreshButton";
 import { ageReceivables } from "@/lib/aging";
 import { alertStatus } from "@/lib/alerts";
 import { todayISO } from "@/lib/dates";
-import { findDuplicateClusters } from "@/lib/duplicates";
 import { formatCents } from "@/lib/money";
-import { getDecisions, getNotDuplicates, getSettings } from "@/lib/store";
-import { getSnapshot } from "@/lib/sync";
+import { getDecisions, getNotDuplicates, getOverviewData, getSettings } from "@/lib/store";
+import { ensureXeroData } from "@/lib/sync";
 
 export default async function Overview() {
-  const snapshot = await getSnapshot();
-  if (!snapshot) {
+  const data = (await ensureXeroData()) ? await getOverviewData() : null;
+  if (!data) {
     return (
       <>
         <h1>Welcome</h1>
@@ -22,14 +21,14 @@ export default async function Overview() {
   }
   const [settings, decisions, notDuplicates] = await Promise.all([getSettings(), getDecisions(), getNotDuplicates()]);
   const today = todayISO();
-  const rows = ageReceivables(snapshot.invoices, today, settings);
+  const rows = ageReceivables(data.unpaidInvoices, today, settings);
   const needsDecision = rows.filter((r) => alertStatus(r, decisions[r.contactId]?.at(-1), today) === "overdue");
-  const duplicates = findDuplicateClusters(snapshot.contacts).filter((c) => !notDuplicates.includes(c.key));
+  const duplicates = data.clusterKeys.filter((key) => !notDuplicates.includes(key));
 
   return (
     <>
       <h1>Overview</h1>
-      <p className="sub"><RefreshButton syncedAt={snapshot.syncedAt} /></p>
+      <p className="sub"><RefreshButton syncedAt={data.syncedAt} /></p>
       <div className="stats">
         <Link href="/receivables" className="stat" style={{ textDecoration: "none", color: "inherit" }}>
           <div className="stat-label">Clients needing a decision</div>

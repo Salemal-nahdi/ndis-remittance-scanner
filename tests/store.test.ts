@@ -17,7 +17,7 @@ describe.skipIf(!url)("store (Postgres)", async () => {
     execFileSync("node", ["scripts/migrate.mjs"], { env: { ...process.env, DATABASE_URL: url } });
   });
   beforeEach(async () => {
-    await sql`truncate xero_connection, xero_snapshot, threshold_overrides, decisions, alert_state, alert_runs, not_duplicates, participant_payers`;
+    await sql`truncate xero_connection, xero_data, threshold_overrides, decisions, alert_state, alert_runs, not_duplicates, participant_payers`;
     await sql`update settings set default_threshold_days = 30, alert_emails = '{}'`;
   });
   afterAll(() => sql.end());
@@ -48,13 +48,27 @@ describe.skipIf(!url)("store (Postgres)", async () => {
     expect(await store.getLastAlertRun()).toEqual({ at: "2026-10-01T22:00:00.000Z", date: "2026-10-02", sent: 3, error: undefined });
   });
 
-  it("stores the Xero copy, and a new connection clears it", async () => {
-    const snapshot = { syncedAt: "2026-10-01T00:00:00.000Z", contacts: [{ contactId: "c1", name: "Jane Citizen" }], invoices: [], invoiceCounts: { c1: 2 } };
+  it("stores the Xero copy, serves each page its part, and a new connection clears it", async () => {
+    const inv = { invoiceId: "i1", invoiceNumber: "INV-1", contactId: "c1", contactName: "Jane Citizen", date: "2026-09-01", dueDate: "2026-09-15", amountDueCents: 100 };
+    const data = {
+      syncedAt: "2026-10-01T00:00:00.000Z",
+      fullSyncedAt: "2026-09-30T00:00:00.000Z",
+      contacts: [{ contactId: "c1", name: "Jane Citizen" }],
+      unpaidInvoices: [inv],
+      invoiceIndex: { i1: "c1", i2: "c1" },
+      invoiceCounts: { c1: 2 },
+      duplicateClusters: [{ key: "c1|c2", contactIds: ["c1", "c2"], confidence: "high" as const, reasons: ["Same NDIS number"] }],
+    };
     await store.saveXeroConnection({ tokenSet: store.seal({ access_token: "x" }), tenantId: "t1", tenantName: "Demo" });
-    await store.saveSnapshot(snapshot);
-    expect(await store.getStoredSnapshot()).toEqual(snapshot);
+    await store.saveXeroData(data);
+    expect(await store.getXeroData()).toEqual(data);
+    expect(await store.getSyncedAt()).toBe(data.syncedAt);
+    expect(await store.getUnpaidInvoices()).toEqual({ syncedAt: data.syncedAt, unpaidInvoices: [inv] });
+    expect((await store.getOverviewData())?.clusterKeys).toEqual(["c1|c2"]);
+    expect((await store.getCleanupData())?.invoiceCounts).toEqual({ c1: 2 });
+
     await store.saveXeroConnection({ tokenSet: store.seal({}), tenantId: "t2", tenantName: "Other" });
-    expect(await store.getStoredSnapshot()).toBeNull();
+    expect(await store.getXeroData()).toBeNull();
     const conn = await store.getXeroConnection();
     expect(conn?.tenantName).toBe("Other");
     expect(store.unseal(conn!.tokenSet)).toEqual({});

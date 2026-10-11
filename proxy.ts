@@ -10,6 +10,6 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  // The scheduled alert check authenticates with CRON_SECRET instead.
-  matcher: ["/((?!login|api/login|api/alerts/run|_next|favicon.ico).*)"],
+  // The scheduled alert check (CRON_SECRET) and Xero webhooks (signed) authenticate themselves.
+  matcher: ["/((?!login|api/login|api/alerts/run|api/xero/webhook|_next|favicon.ico).*)"],
 };

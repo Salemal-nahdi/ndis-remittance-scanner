@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useState, useTransition } from "react";
+import { Fragment, useCallback, useOptimistic, useState, useTransition } from "react";
 import { markNotDuplicates } from "@/app/actions";
 import type { DuplicateCluster } from "@/lib/duplicates";
 import { formatCents } from "@/lib/money";
@@ -41,9 +41,12 @@ export function ContactCleanup({ clusters, missingNdis }: { clusters: ClusterRow
   );
 }
 
-function Duplicates({ clusters }: { clusters: ClusterRow[] }) {
+function Duplicates({ clusters: savedClusters }: { clusters: ClusterRow[] }) {
   const [open, setOpen] = useState<string | null>(null);
-  const [pending, start] = useTransition();
+  // A group marked "different clients" disappears at once while it saves.
+  const [clusters, hide] = useOptimistic(savedClusters, (current: ClusterRow[], key: string) => current.filter((c) => c.key !== key));
+  const [, start] = useTransition();
+  const [error, setError] = useState("");
   const getValue = useCallback((c: ClusterRow, key: ClusterKey) => {
     switch (key) {
       case "names": return c.members[0]?.name;
@@ -57,6 +60,7 @@ function Duplicates({ clusters }: { clusters: ClusterRow[] }) {
 
   return (
     <>
+      {error && <p className="error" role="status">{error}</p>}
       <div className="table-wrap">
         <table>
           <thead>
@@ -89,7 +93,19 @@ function Duplicates({ clusters }: { clusters: ClusterRow[] }) {
                         Keep the contact with the most invoices, then open the others in Xero and use Options → Merge to
                         merge them into it (Xero doesn't let apps merge contacts).
                       </p>
-                      <button disabled={pending} onClick={() => start(() => markNotDuplicates(c.key))}>
+                      <button
+                        onClick={() =>
+                          start(async () => {
+                            setError("");
+                            hide(c.key);
+                            try {
+                              await markNotDuplicates(c.key);
+                            } catch {
+                              setError("Couldn't save that change. Check your connection and try again.");
+                            }
+                          })
+                        }
+                      >
                         These are different clients
                       </button>
                     </td>

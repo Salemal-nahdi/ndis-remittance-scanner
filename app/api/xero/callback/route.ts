@@ -12,6 +12,6 @@ export async function GET(req: Request) {
   if (!tenant) return NextResponse.redirect(new URL("/?xero=no-organisation", req.url));
 
   await saveXeroConnection({ tokenSet: seal(tokenSet), tenantId: tenant.tenantId, tenantName: tenant.tenantName });
-  await syncFromXero();
+  await syncFromXero({ full: true });
   return NextResponse.redirect(new URL("/receivables", req.url));
 }

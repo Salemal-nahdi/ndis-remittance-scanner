@@ -1,11 +1,11 @@
 import { connection } from "next/server";
 import { Nav } from "@/components/Nav";
-import { getXeroConnection } from "@/lib/store";
+import { getXeroConnectionForRequest } from "@/lib/store";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   // Every page here shows live data, so never pre-render at build time.
   await connection();
-  const xero = await getXeroConnection();
+  const xero = await getXeroConnectionForRequest();
   return (
     <div className="shell">
       <nav className="sidebar">

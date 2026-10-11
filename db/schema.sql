@@ -9,11 +9,22 @@ create table if not exists xero_connection (
   updated_at timestamptz not null default now()
 );
 
--- Local copy of Xero contacts and unpaid invoices, so pages don't wait on Xero.
-create table if not exists xero_snapshot (
+-- Local copy of Xero data, so pages don't wait on Xero. Columns are separate so
+-- each page loads only what it shows. Rebuilt from Xero at any time, so it is
+-- safe to drop. (Replaces the earlier single-column xero_snapshot table.)
+drop table if exists xero_snapshot;
+create table if not exists xero_data (
   id smallint primary key default 1 check (id = 1),
   synced_at timestamptz not null,
-  data jsonb not null
+  -- Last time everything was re-fetched rather than just changes.
+  full_synced_at timestamptz not null,
+  contacts jsonb not null,
+  unpaid_invoices jsonb not null,
+  -- invoiceId -> contactId for approved and paid sales invoices, to keep counts right on partial syncs.
+  invoice_index jsonb not null,
+  invoice_counts jsonb not null,
+  -- Worked out once per sync rather than on every page view.
+  duplicate_clusters jsonb not null
 );
 
 create table if not exists settings (

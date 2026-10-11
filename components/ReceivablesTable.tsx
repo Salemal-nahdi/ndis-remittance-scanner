@@ -1,9 +1,9 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState, useTransition } from "react";
+import { Fragment, useCallback, useEffect, useOptimistic, useState, useTransition } from "react";
 import { recordDecision, setContactThreshold, setParticipantPayer } from "@/app/actions";
-import { BUCKETS, type ContactAging } from "@/lib/aging";
-import { DECISION_LABELS, type AlertStatus, type Decision, type DecisionAction } from "@/lib/alerts";
+import { BUCKETS, ageReceivables, type ContactAging } from "@/lib/aging";
+import { DECISION_LABELS, alertStatus, type AlertStatus, type Decision, type DecisionAction } from "@/lib/alerts";
 import { formatCents } from "@/lib/money";
 import { PAYER_TYPE_LABELS, payerLabel, type Payer, type PayerType } from "@/lib/payers";
 import { useSort } from "./useSort";
@@ -16,6 +16,31 @@ export interface ReceivableRow extends ContactAging {
 }
 
 type Filter = "attention" | "handled" | "all";
+
+/** A change made on this page, shown straight away while it saves. */
+type Change = { contactId: string } & (
+  | { kind: "decision"; decision: Decision }
+  | { kind: "payer"; payer?: Payer }
+  | { kind: "threshold"; days: number | null }
+);
+/** Shows a change on screen immediately, saves it, and returns an error message if saving failed. */
+type Save = (change: Change, action: () => Promise<{ error?: string } | void>) => Promise<string | undefined>;
+
+function applyChange(row: ReceivableRow, change: Change, today: string, defaultThresholdDays: number): ReceivableRow {
+  switch (change.kind) {
+    case "decision": {
+      const history = [...row.history, change.decision];
+      return { ...row, history, status: alertStatus(row, change.decision, today) };
+    }
+    case "payer":
+      return { ...row, payer: change.payer };
+    case "threshold": {
+      const days = change.days ?? defaultThresholdDays;
+      const [aged] = ageReceivables(row.invoices, today, { defaultThresholdDays: days, overrides: {} });
+      return { ...row, ...aged, hasOverride: change.days !== null, status: alertStatus(aged, row.history.at(-1), today) };
+    }
+  }
+}
 type Key = "name" | "payer" | "status" | "oldest" | "over" | "total" | "threshold" | (typeof BUCKETS)[number];
 
 const STATUS_ORDER: Record<AlertStatus, number> = { overdue: 0, hold: 1, follow_up: 2, snooze: 3, dismiss: 4, clear: 5 };
@@ -31,16 +56,39 @@ function StatusBadge({ status, snoozeUntil }: { status: AlertStatus; snoozeUntil
 interface Props {
   rows: ReceivableRow[];
   today: string;
+  defaultThresholdDays: number;
   /** Plan manager names already in use, offered when setting a participant's payer. */
   planManagers: string[];
 }
 
-export function ReceivablesTable({ rows, today, planManagers }: Props) {
+export function ReceivablesTable({ rows: savedRows, today, defaultThresholdDays, planManagers }: Props) {
+  // Changes show at once; when the save finishes the page's fresh data takes over,
+  // and if the save failed the change is rolled back.
+  const [rows, addChange] = useOptimistic(savedRows, (current: ReceivableRow[], change: Change) =>
+    current.map((r) => (r.contactId === change.contactId ? applyChange(r, change, today, defaultThresholdDays) : r)),
+  );
+  const [, startSave] = useTransition();
+  const save: Save = (change, action) =>
+    new Promise((resolve) =>
+      startSave(async () => {
+        addChange(change);
+        let error: string | undefined;
+        try {
+          error = (await action())?.error;
+        } catch {
+          // Lost connection or server error: the change is rolled back when this ends.
+          error = "Couldn't save that change. Check your connection and try again.";
+        }
+        if (error) setFlash({ text: error, error: true });
+        resolve(error);
+      }),
+    );
+
   const [filter, setFilter] = useState<Filter>("attention");
   const [view, setView] = useState<"participants" | "payers">("participants");
   const [payerFilter, setPayerFilter] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const [flash, setFlash] = useState("");
+  const [flash, setFlash] = useState<{ text: string; error?: boolean } | null>(null);
 
   const inFilter = rows.filter((r) =>
     filter === "all" ? true : filter === "attention" ? r.status === "overdue" : r.status !== "overdue" && r.status !== "clear",
@@ -79,7 +127,7 @@ export function ReceivablesTable({ rows, today, planManagers }: Props) {
         <button className={view === "participants" ? "primary" : ""} onClick={() => setView("participants")}>Participant</button>
         <button className={view === "payers" ? "primary" : ""} onClick={() => setView("payers")}>Who pays</button>
       </div>
-      {flash && <p className="success" role="status">{flash}</p>}
+      {flash && <p className={flash.error ? "error" : "success"} role="status">{flash.text}</p>}
       {view === "payers" ? (
         <PayerTable
           rows={inFilter}
@@ -127,7 +175,7 @@ export function ReceivablesTable({ rows, today, planManagers }: Props) {
                   <td className="num">{r.thresholdDays} days{r.hasOverride ? "*" : ""}</td>
                 </tr>
                 {open === r.contactId && (
-                  <tr><td colSpan={12} className="wrap"><ContactDetail row={r} today={today} onSaved={setFlash} planManagers={planManagers} /></td></tr>
+                  <tr><td colSpan={12} className="wrap"><ContactDetail row={r} today={today} save={save} onSaved={(text) => setFlash({ text })} planManagers={planManagers} /></td></tr>
                 )}
               </Fragment>
             ))}
@@ -210,18 +258,19 @@ function PayerTable({ rows, onPick }: { rows: ReceivableRow[]; onPick: (label: s
   );
 }
 
-function PayerEditor({ row, planManagers }: { row: ReceivableRow; planManagers: string[] }) {
+function PayerEditor({ row, planManagers, save }: { row: ReceivableRow; planManagers: string[]; save: Save }) {
   const [type, setType] = useState<PayerType | "">(row.payer?.type ?? "");
   const [manager, setManager] = useState(row.payer?.planManager ?? "");
   const [message, setMessage] = useState<{ error?: string; ok?: string }>({});
-  const [pending, start] = useTransition();
   const listId = `plan-managers-${row.contactId}`;
 
-  const save = () =>
-    start(async () => {
-      const res = await setParticipantPayer(row.contactId, type ? { type, planManager: manager } : null);
-      setMessage(res.error ? { error: res.error } : { ok: "Saved" });
-    });
+  const savePayer = async () => {
+    if (type === "plan_managed" && !manager.trim()) return setMessage({ error: "Enter the plan manager's name" });
+    const payer: Payer | undefined = type ? { type, planManager: type === "plan_managed" ? manager.trim() : undefined } : undefined;
+    setMessage({ ok: "Saved" });
+    const error = await save({ contactId: row.contactId, kind: "payer", payer }, () => setParticipantPayer(row.contactId, payer ?? null));
+    if (error) setMessage({ error });
+  };
 
   return (
     <>
@@ -238,16 +287,17 @@ function PayerEditor({ row, planManagers }: { row: ReceivableRow; planManagers: 
           <datalist id={listId}>{planManagers.map((m) => <option key={m} value={m} />)}</datalist>{" "}
         </>
       )}
-      <button disabled={pending} onClick={save}>Save</button>
+      <button onClick={savePayer}>Save</button>
       {message.error && <p className="error">{message.error}</p>}
       {message.ok && <span className="success"> {message.ok}</span>}
     </>
   );
 }
 
-function ContactDetail({ row, today, onSaved, planManagers }: {
+function ContactDetail({ row, today, save, onSaved, planManagers }: {
   row: ReceivableRow;
   today: string;
+  save: Save;
   onSaved: (message: string) => void;
   planManagers: string[];
 }) {
@@ -257,25 +307,37 @@ function ContactDetail({ row, today, onSaved, planManagers }: {
   const [snoozeUntil, setSnoozeUntil] = useState("");
   const [threshold, setThreshold] = useState(String(row.thresholdDays));
   const [message, setMessage] = useState<{ error?: string; ok?: string }>({});
-  const [pending, start] = useTransition();
 
   useEffect(() => {
     try { setBy(localStorage.getItem("decidedBy") ?? ""); } catch {}
   }, []);
+  // Keep the box in step when the threshold changes, e.g. after "Use default".
+  useEffect(() => setThreshold(String(row.thresholdDays)), [row.thresholdDays]);
 
-  const save = () =>
-    start(async () => {
-      try { localStorage.setItem("decidedBy", by); } catch {}
-      const res = await recordDecision({
-        contactId: row.contactId, action, note, by, snoozeUntil: snoozeUntil || undefined,
-        invoiceIds: row.invoices.filter((i) => i.overThreshold).map((i) => i.invoiceId),
-      });
-      if (res.error) return setMessage({ error: res.error });
-      setMessage({ ok: "Saved" });
-      setNote("");
-      // The client may move to the "Decided" list, closing this panel, so confirm above the table too.
-      onSaved(`${row.contactName}: ${DECISION_LABELS[action].toLowerCase()}${action === "snooze" ? ` until ${snoozeUntil}` : ""}. Saved under "Decided".`);
-    });
+  const saveDecision = async () => {
+    // Checked here as well as on the server, so a change never shows and then disappears.
+    if (!by.trim()) return setMessage({ error: "Enter your name so the team can see who decided" });
+    if (action === "snooze" && !snoozeUntil) return setMessage({ error: "Pick a date to snooze until" });
+    try { localStorage.setItem("decidedBy", by); } catch {}
+    const input = {
+      contactId: row.contactId, action, note: note.trim(), by: by.trim(), snoozeUntil: action === "snooze" ? snoozeUntil : undefined,
+      invoiceIds: row.invoices.filter((i) => i.overThreshold).map((i) => i.invoiceId),
+    };
+    setMessage({ ok: "Saved" });
+    setNote("");
+    // The participant may move to the "Decided" list, closing this panel, so confirm above the table too.
+    onSaved(`${row.contactName}: ${DECISION_LABELS[action].toLowerCase()}${action === "snooze" ? ` until ${snoozeUntil}` : ""}. Saved under "Decided".`);
+    await save(
+      { contactId: row.contactId, kind: "decision", decision: { ...input, at: new Date().toISOString() } },
+      () => recordDecision(input),
+    );
+  };
+
+  const saveThreshold = (days: number | null) => {
+    if (days !== null && !(days >= 1 && days <= 365)) return setMessage({ error: "Threshold must be between 1 and 365 days" });
+    setMessage({});
+    void save({ contactId: row.contactId, kind: "threshold", days }, () => setContactThreshold(row.contactId, days));
+  };
 
   return (
     <div className="detail">
@@ -302,9 +364,9 @@ function ContactDetail({ row, today, onSaved, planManagers }: {
           Overdue threshold for this participant <span className="hint">(days past due date before alerting)</span>
         </label>
         <input type="number" min={1} max={365} value={threshold} onChange={(e) => setThreshold(e.target.value)} style={{ width: 90 }} />{" "}
-        <button disabled={pending} onClick={() => start(() => setContactThreshold(row.contactId, Number(threshold)))}>Save</button>{" "}
-        {row.hasOverride && <button disabled={pending} onClick={() => start(() => setContactThreshold(row.contactId, null))}>Use default</button>}
-        <PayerEditor row={row} planManagers={planManagers} />
+        <button onClick={() => saveThreshold(Math.round(Number(threshold)))}>Save</button>{" "}
+        {row.hasOverride && <button onClick={() => saveThreshold(null)}>Use default</button>}
+        <PayerEditor row={row} planManagers={planManagers} save={save} />
       </div>
       <div>
         {row.status !== "clear" && (
@@ -323,13 +385,13 @@ function ContactDetail({ row, today, onSaved, planManagers }: {
                 <input id="snooze" type="date" min={today} value={snoozeUntil} onChange={(e) => setSnoozeUntil(e.target.value)} />
               </>
             )}
-            {action === "dismiss" && <p className="hint">Hidden until another invoice for this client goes past the threshold.</p>}
+            {action === "dismiss" && <p className="hint">Hidden until another invoice for this participant goes past the threshold.</p>}
             <label htmlFor="note">Note</label>
             <textarea id="note" rows={2} value={note} onChange={(e) => setNote(e.target.value)} style={{ width: "100%" }}
               placeholder="e.g. Emailed plan manager, promised payment Friday" />
             <label htmlFor="by">Your name</label>
             <input id="by" value={by} onChange={(e) => setBy(e.target.value)} />{" "}
-            <button className="primary" disabled={pending} onClick={save}>{pending ? "Saving…" : "Save decision"}</button>
+            <button className="primary" onClick={saveDecision}>Save decision</button>
             {message.error && <p className="error">{message.error}</p>}
             {message.ok && <p className="success">{message.ok}</p>}
           </>

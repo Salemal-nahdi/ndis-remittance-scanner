@@ -5,8 +5,8 @@ import { toCents } from "./money";
 import { parseXeroDate } from "./dates";
 import { LOCKS, sql } from "./db";
 import { getXeroConnection, saveXeroTokens, seal, unseal } from "./store";
-import type { UnpaidInvoice } from "./aging";
 import type { ContactRecord } from "./duplicates";
+import type { FetchedInvoice } from "./xero-merge";
 
 /**
  * Xero apps created from March 2026 use granular scopes. Older apps can set
@@ -50,12 +50,13 @@ async function connectedClient(): Promise<{ xero: XeroClient; tenantId: string }
 
 const PAGE_SIZE = 1000;
 
-export async function fetchContacts(): Promise<ContactRecord[]> {
+/** Contacts, or only those changed since `since`. Archived ones are included. */
+export async function fetchContacts(since?: Date): Promise<ContactRecord[]> {
   const { xero, tenantId } = await connectedClient();
   const out: ContactRecord[] = [];
   for (let page = 1; ; page++) {
     const res = await xero.accountingApi.getContacts(
-      tenantId, undefined, undefined, "Name ASC", undefined, page, true, undefined, undefined, PAGE_SIZE,
+      tenantId, since, undefined, "Name ASC", undefined, page, true, undefined, undefined, PAGE_SIZE,
     );
     const contacts = res.body.contacts ?? [];
     for (const c of contacts) {
@@ -73,31 +74,37 @@ export async function fetchContacts(): Promise<ContactRecord[]> {
   }
 }
 
-/** Sales invoices, with the unpaid ones returned in full and all of them counted per contact. */
-export async function fetchInvoices(): Promise<{ unpaid: UnpaidInvoice[]; counts: Record<string, number> }> {
+/**
+ * Sales invoices. A full fetch gets approved and paid ones; a fetch of changes
+ * since `since` gets every status, so voided and deleted invoices are removed.
+ */
+export async function fetchInvoices(since?: Date): Promise<FetchedInvoice[]> {
   const { xero, tenantId } = await connectedClient();
-  const unpaid: UnpaidInvoice[] = [];
-  const counts: Record<string, number> = {};
+  const statuses = since ? undefined : ["AUTHORISED", "PAID"];
+  const out: FetchedInvoice[] = [];
   for (let page = 1; ; page++) {
     const res = await xero.accountingApi.getInvoices(
-      tenantId, undefined, 'Type=="ACCREC"', "DueDate ASC", undefined, undefined, undefined,
-      ["AUTHORISED", "PAID"], page, false, undefined, undefined, true, PAGE_SIZE,
+      tenantId, since, 'Type=="ACCREC"', "UpdatedDateUTC ASC", undefined, undefined, undefined,
+      statuses, page, false, undefined, undefined, true, PAGE_SIZE,
     );
     const invoices = res.body.invoices ?? [];
     for (const inv of invoices) {
       const contactId = inv.contact?.contactID ?? "";
-      counts[contactId] = (counts[contactId] ?? 0) + 1;
-      if (String(inv.status) !== "AUTHORISED") continue;
-      unpaid.push({
+      out.push({
         invoiceId: inv.invoiceID!,
-        invoiceNumber: inv.invoiceNumber ?? "",
         contactId,
-        contactName: inv.contact?.name ?? "",
-        date: parseXeroDate(inv.date),
-        dueDate: parseXeroDate(inv.dueDate),
-        amountDueCents: toCents(inv.amountDue),
+        status: String(inv.status),
+        unpaid: {
+          invoiceId: inv.invoiceID!,
+          invoiceNumber: inv.invoiceNumber ?? "",
+          contactId,
+          contactName: inv.contact?.name ?? "",
+          date: parseXeroDate(inv.date),
+          dueDate: parseXeroDate(inv.dueDate),
+          amountDueCents: toCents(inv.amountDue),
+        },
       });
     }
-    if (invoices.length < PAGE_SIZE) return { unpaid, counts };
+    if (invoices.length < PAGE_SIZE) return out;
   }
 }

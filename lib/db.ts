@@ -15,5 +15,5 @@ export const sql =
     onnotice: () => {},
   }));
 
-/** Advisory lock ids, so only one request at a time refreshes tokens or sends alerts. */
-export const LOCKS = { xeroTokens: 7301, alertRun: 7302 } as const;
+/** Advisory lock ids, so only one request at a time refreshes tokens, syncs from Xero or sends alerts. */
+export const LOCKS = { xeroTokens: 7301, alertRun: 7302, xeroSync: 7303 } as const;

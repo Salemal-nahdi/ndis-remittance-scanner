@@ -2,9 +2,10 @@ import "server-only";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { AlertState, Decision, DecisionAction } from "./alerts";
 import type { UnpaidInvoice } from "./aging";
-import type { ContactRecord } from "./duplicates";
+import type { ContactRecord, DuplicateCluster } from "./duplicates";
 import type { Payer, PayerType } from "./payers";
 import postgres from "postgres";
+import { cache } from "react";
 import { sql } from "./db";
 
 /** App state in Postgres. Tables are defined in db/schema.sql. */
@@ -15,12 +16,16 @@ export interface Settings {
   alertEmails: string[];
 }
 
-export interface XeroSnapshot {
+/** Everything kept from Xero, as saved by a sync. */
+export interface StoredXeroData {
   syncedAt: string;
+  fullSyncedAt: string;
   contacts: ContactRecord[];
-  invoices: UnpaidInvoice[];
-  /** contactId -> number of invoices of any status, for the clean-up screen */
+  unpaidInvoices: UnpaidInvoice[];
+  invoiceIndex: Record<string, string>;
+  /** contactId -> number of approved and paid invoices, for the clean-up screen */
   invoiceCounts: Record<string, number>;
+  duplicateClusters: DuplicateCluster[];
 }
 
 export interface XeroConnection {
@@ -49,6 +54,9 @@ export async function getXeroConnection(db: Tx = sql): Promise<XeroConnection | 
   return row ?? null;
 }
 
+/** The connection, looked up once per page request however many components ask. */
+export const getXeroConnectionForRequest = cache(() => getXeroConnection());
+
 /** Saves a new connection and drops the copy of the previous organisation's data. */
 export async function saveXeroConnection(c: XeroConnection): Promise<void> {
   await sql.begin(async (tx) => {
@@ -57,7 +65,7 @@ export async function saveXeroConnection(c: XeroConnection): Promise<void> {
       values (1, ${c.tokenSet}, ${c.tenantId}, ${c.tenantName})
       on conflict (id) do update set token_set = excluded.token_set, tenant_id = excluded.tenant_id,
         tenant_name = excluded.tenant_name, updated_at = now()`;
-    await tx`delete from xero_snapshot`;
+    await tx`delete from xero_data`;
   });
 }
 
@@ -65,19 +73,56 @@ export async function saveXeroTokens(tokenSet: string, db: Tx = sql): Promise<vo
   await db`update xero_connection set token_set = ${tokenSet}, updated_at = now() where id = 1`;
 }
 
-// Copy of Xero data
+// Copy of Xero data. Each page reads only the columns it needs.
 
-export async function getStoredSnapshot(): Promise<XeroSnapshot | null> {
-  const [row] = await sql<{ syncedAt: Date; data: Omit<XeroSnapshot, "syncedAt"> }[]>`
-    select synced_at as "syncedAt", data from xero_snapshot where id = 1`;
-  return row ? { ...row.data, syncedAt: row.syncedAt.toISOString() } : null;
+export async function getSyncedAt(): Promise<string | null> {
+  const [row] = await sql<{ syncedAt: Date }[]>`select synced_at as "syncedAt" from xero_data where id = 1`;
+  return row?.syncedAt.toISOString() ?? null;
 }
 
-export async function saveSnapshot(s: XeroSnapshot): Promise<void> {
-  const { syncedAt, ...data } = s;
-  await sql`
-    insert into xero_snapshot (id, synced_at, data) values (1, ${syncedAt}, ${sql.json(data as never)})
-    on conflict (id) do update set synced_at = excluded.synced_at, data = excluded.data`;
+export async function getUnpaidInvoices(): Promise<{ syncedAt: string; unpaidInvoices: UnpaidInvoice[] } | null> {
+  const [row] = await sql<{ syncedAt: Date; unpaidInvoices: UnpaidInvoice[] }[]>`
+    select synced_at as "syncedAt", unpaid_invoices as "unpaidInvoices" from xero_data where id = 1`;
+  return row ? { ...row, syncedAt: row.syncedAt.toISOString() } : null;
+}
+
+export async function getOverviewData(): Promise<{ syncedAt: string; unpaidInvoices: UnpaidInvoice[]; clusterKeys: string[] } | null> {
+  const [row] = await sql<{ syncedAt: Date; unpaidInvoices: UnpaidInvoice[]; clusterKeys: string[] }[]>`
+    select synced_at as "syncedAt", unpaid_invoices as "unpaidInvoices",
+      coalesce(jsonb_path_query_array(duplicate_clusters, '$[*].key'), '[]') as "clusterKeys"
+    from xero_data where id = 1`;
+  return row ? { ...row, syncedAt: row.syncedAt.toISOString() } : null;
+}
+
+export async function getCleanupData(): Promise<Pick<
+  StoredXeroData,
+  "syncedAt" | "contacts" | "unpaidInvoices" | "invoiceCounts" | "duplicateClusters"
+> | null> {
+  const [row] = await sql<(Omit<StoredXeroData, "syncedAt" | "fullSyncedAt" | "invoiceIndex"> & { syncedAt: Date })[]>`
+    select synced_at as "syncedAt", contacts, unpaid_invoices as "unpaidInvoices",
+      invoice_counts as "invoiceCounts", duplicate_clusters as "duplicateClusters"
+    from xero_data where id = 1`;
+  return row ? { ...row, syncedAt: row.syncedAt.toISOString() } : null;
+}
+
+/** Everything, for a sync to merge changes into. */
+export async function getXeroData(db: Tx = sql): Promise<StoredXeroData | null> {
+  const [row] = await db<(Omit<StoredXeroData, "syncedAt" | "fullSyncedAt"> & { syncedAt: Date; fullSyncedAt: Date })[]>`
+    select synced_at as "syncedAt", full_synced_at as "fullSyncedAt", contacts, unpaid_invoices as "unpaidInvoices",
+      invoice_index as "invoiceIndex", invoice_counts as "invoiceCounts", duplicate_clusters as "duplicateClusters"
+    from xero_data where id = 1`;
+  return row ? { ...row, syncedAt: row.syncedAt.toISOString(), fullSyncedAt: row.fullSyncedAt.toISOString() } : null;
+}
+
+export async function saveXeroData(d: StoredXeroData, db: Tx = sql): Promise<void> {
+  const json = (v: unknown) => db.json(v as never);
+  await db`
+    insert into xero_data (id, synced_at, full_synced_at, contacts, unpaid_invoices, invoice_index, invoice_counts, duplicate_clusters)
+    values (1, ${d.syncedAt}, ${d.fullSyncedAt}, ${json(d.contacts)}, ${json(d.unpaidInvoices)}, ${json(d.invoiceIndex)},
+      ${json(d.invoiceCounts)}, ${json(d.duplicateClusters)})
+    on conflict (id) do update set synced_at = excluded.synced_at, full_synced_at = excluded.full_synced_at,
+      contacts = excluded.contacts, unpaid_invoices = excluded.unpaid_invoices, invoice_index = excluded.invoice_index,
+      invoice_counts = excluded.invoice_counts, duplicate_clusters = excluded.duplicate_clusters`;
 }
 
 // Settings

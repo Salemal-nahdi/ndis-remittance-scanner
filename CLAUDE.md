@@ -20,7 +20,10 @@ records the payments in Xero once a person approves them.
 - `lib/` holds the logic. `aging.ts`, `alerts.ts` and `duplicates.ts` are pure and tested in `tests/`.
 - State is in Postgres: schema in `db/schema.sql` (idempotent, applied by `npm run db:migrate`),
   queries in `lib/store.ts`. Change the schema by adding idempotent statements there.
-- `lib/sync.ts` keeps a copy of Xero data in the database; pages read it rather than calling Xero.
+- `lib/sync.ts` keeps a copy of Xero data in `xero_data`; pages call `ensureXeroData()` and then
+  read only the columns they need, never Xero directly. Syncs fetch changes only (merge logic in
+  `lib/xero-merge.ts`), with a full re-fetch daily. Xero webhooks hit `/api/xero/webhook`.
+- Saves on the overdue and clean-up pages are optimistic (`useOptimistic`); keep new edits that way.
 - Every table sorts by clicking its headings via `components/useSort.tsx`; use it for new tables.
 - Money is handled in integer cents (`lib/money.ts`).
 - Run `npm test` (with `TEST_DATABASE_URL` set to a throwaway database), `npm run typecheck`

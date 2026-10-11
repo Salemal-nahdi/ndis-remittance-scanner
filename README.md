@@ -26,8 +26,8 @@ of the Xero data) lives in Postgres. Any provider works: Neon, Supabase, Railway
 Vercel Postgres or your own server.
 
 ## Deploying
-1. Create a Postgres database and put its connection string in `DATABASE_URL`
-   (use the pooled one if offered).
+1. Create a Postgres database in Sydney (`ap-southeast-2`) and put its connection
+   string in `DATABASE_URL` (use the pooled one if offered).
 2. Run `npm run db:migrate` once, and again after updates that change `db/schema.sql`.
    It is safe to run repeatedly.
 3. Deploy. On Vercel, import the repo, add the environment variables from
@@ -63,10 +63,23 @@ A database lock stops the scheduled check and the "send now" button from emailin
 the same clients twice.
 
 ## Speed
-Pages read a local copy of the Xero data, so switching tabs doesn't wait on Xero.
-The copy refreshes in the background when it is over 5 minutes old, when someone
-clicks "Refresh now", and before each alert check. Navigation links prefetch each
-tab and the browser keeps visited tabs for a minute.
+- **Sydney hosting.** Put the database and the app in Sydney: `vercel.json` pins
+  Vercel to `syd1`; on Netlify set the functions region; create the Neon or
+  Supabase database in `ap-southeast-2`. This is the biggest single factor.
+- **Pages never wait on Xero.** They read the copy of Xero data in the database,
+  and each page loads only the parts it shows. Duplicate detection runs once per
+  sync, not on every page view.
+- **Only changes are fetched.** A sync asks Xero for contacts and invoices changed
+  since the last one; everything is re-fetched once a day as a safety net. A
+  database lock means parallel requests share one sync.
+- **Xero webhooks** (optional, recommended) tell the app the moment an invoice or
+  contact changes. In the Xero developer portal, add a webhook for Invoices and
+  Contacts with delivery URL `<APP_URL>/api/xero/webhook`, and put its key in
+  `XERO_WEBHOOK_KEY`. Without it, data refreshes when it is over 5 minutes old.
+- **Saves are instant.** Decisions, who pays, thresholds and "different clients"
+  show on screen straight away and save in the background; a failed save is
+  rolled back with a message.
+- Navigation links prefetch each tab, and the browser keeps visited tabs for a minute.
 
 ## Checks
 `npm test`, `npm run typecheck`, `npm run build`. The database tests run when
