@@ -1,10 +1,12 @@
 /**
  * On an always-on server, runs the overdue check once a day after ALERT_HOUR
- * (business time zone). On serverless hosting this timer doesn't stay alive;
- * vercel.json schedules /api/alerts/run instead.
+ * (business time zone). On serverless hosting this timer doesn't stay alive, so
+ * it is switched off there; vercel.json or the Netlify scheduled function in
+ * netlify/functions schedules /api/alerts/run instead.
  */
 export async function register() {
-  if (process.env.NEXT_RUNTIME !== "nodejs" || process.env.VERCEL || process.env.DISABLE_ALERT_SCHEDULER) return;
+  const serverless = process.env.VERCEL || process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME;
+  if (process.env.NEXT_RUNTIME !== "nodejs" || serverless || process.env.DISABLE_ALERT_SCHEDULER) return;
   const { getLastAlertRun, getXeroConnection } = await import("./lib/store");
   const { runAlertCheck } = await import("./lib/run-alerts");
   const { BUSINESS_TZ, todayISO } = await import("./lib/dates");

@@ -1,4 +1,4 @@
-/** Session cookie for the shared app password. Uses Web Crypto so it also runs in the proxy. */
+/** Session cookie for the shared app password. Web APIs only, so it also runs in the proxy on edge runtimes. */
 export const SESSION_COOKIE = "session";
 
 async function hmac(value: string): Promise<string> {
@@ -9,8 +9,9 @@ async function hmac(value: string): Promise<string> {
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
-  return Buffer.from(sig).toString("base64url");
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
+  // base64url without Buffer, which edge runtimes (e.g. Netlify's) may not provide.
+  return btoa(String.fromCharCode(...sig)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export async function sessionToken(): Promise<string> {

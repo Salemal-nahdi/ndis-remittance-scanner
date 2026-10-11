@@ -9,3 +9,6 @@ next-env.d.ts
 # personal information (names, NDIS numbers, payment details) - never commit.
 private-data/
 
+
+# Netlify local build output
+.netlify/
